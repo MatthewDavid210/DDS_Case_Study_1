@@ -1,0 +1,194 @@
+---
+title: "Beer and Breweries EDA Project 1"
+author: "Joshua Turk, Matthew David"
+date: "2023-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Libraries Used:
+```{r, warning = FALSE}
+library(tidyverse)
+library(ggthemes)
+library(usmap)
+library(caret)
+library(class)
+```
+
+Imports:
+```{r}
+beer <- read.csv(file.choose(), header = TRUE)
+brew <- read.csv(file.choose(), header = TRUE)
+
+#Cleaning the space in state names
+brew$State <- substr(brew$State, 2, nchar(brew$State))
+```
+
+
+1. This bar chart shows how many breweries are in each state. We can see that Colorado has the most breweries at 47 and West Virginia, South Dakota, North Dakota, and DC all are tied with only 1 brewery. Also included is a heatmap of the breweries across the states (Using usmaps library).
+```{r, fig.dim = c(10,10)}
+brew %>% count(State) %>% 
+  ggplot(aes(reorder(State, -n), n)) + 
+  geom_col(fill = "#bc9c54") + 
+  geom_text(aes(label = n), position = position_dodge(width = 0.9), hjust = -0.25) + 
+  coord_flip() + labs(title = "Breweries by State", y = element_blank(), x = element_blank()) + 
+  theme(legend.position = "none", axis.text = element_text(size = 13))
+
+mapdata <- brew %>% count(State) %>% rename("state" = "State")
+plot_usmap(data = mapdata, regions = "state", values = "n", labels = TRUE) + 
+  scale_fill_continuous(low = "#213740", high = "grey", name = "Brewery Count")
+```
+
+2. Here the data is joined using a left join.
+```{r}
+beerbrew <- beer %>% left_join(brew, by = c("Brewery_id"="Brew_ID"), suffix = c(".Beer", ".Brewery"))
+```
+
+3. We decided to impute the missing values in the ABV and IBU columns with the overall mean of the respective column in order to preserve the data.
+```{r}
+beerbrew$IBU[is.na(beerbrew$IBU)] <- mean(beerbrew$IBU, na.rm = TRUE)
+beerbrew$ABV[is.na(beerbrew$ABV)] <- mean(beerbrew$ABV, na.rm = TRUE)
+```
+
+4. These charts display the median IBU and ABV in each state.
+```{r, , fig.dim = c(10,10)}
+beerbrew %>% filter(!is.na(IBU)) %>% group_by(State) %>% 
+  summarize(median = median(IBU)) %>% 
+  ggplot(aes(reorder(State, -median), median)) + 
+  geom_col(fill = "#bc9c54") + coord_flip() + 
+  labs(x = element_blank(), y = "Median IBU", title = "Median IBU By State") + 
+  theme(legend.position = "none", axis.text = element_text(size = 13))
+
+beerbrew %>% filter(!is.na(ABV)) %>% 
+  group_by(State) %>% summarize(median = median(ABV) * 100) %>% 
+  ggplot(aes(reorder(State, -median), median)) + 
+  geom_col(fill = "#213740") + coord_flip() + 
+  labs(x = element_blank(), y = "Median ABV", title = "Median ABV By State") +
+  theme(axis.text = element_text(size = 13))
+```
+
+5. Here we can see the beers with the highest ABV and IBU. The highest IBU is the Bitter Bitch Imperial IPA from Oregan. The highest ABV is the Lee Hill Series Vol. 5 from Colorado.
+```{r}
+beerbrewIBU <- beerbrew %>%  arrange(-IBU) 
+beerbrewABV <- beerbrew %>%  arrange(-ABV)
+head(beerbrewIBU, 1)
+head(beerbrewABV, 1)
+```
+
+6. Here we can see the distribution of ABV as well as the summary statistics.
+```{r, , fig.dim = c(10,10)}
+beerbrew%>%ggplot(aes(x=ABV)) + 
+  geom_histogram(color="#213740",fill= "#bc9c54")+ 
+  ggtitle("Distribution of ABV")+theme(legend.position = "none")
+
+summary(beerbrew$ABV)
+```
+
+7. In order to look at the relationship between ABV and IBU we've created a scatterplot. There appears to be a positive correlation between the two variables, however this relationship isn't the strongest.
+```{r, , fig.dim = c(10,10)}
+beerbrew %>% ggplot(aes(ABV, IBU, alpha = 0.5)) + 
+  geom_point(color = "#213740") + 
+  geom_smooth(method = lm, se = FALSE, color = "#bc9c54") + 
+  theme(legend.position = "none")
+
+```
+
+8. To investigate the difference with respect to ABV and IBU between IPAs and other Ales, we have created a kNN model. This model yields an average accuracy of about 81.6%, showing that IPAs and Ales can be fairly well defined by just their ABV and IBU. 
+```{r, fig.dim = c(10,10)}
+#filtering and categorizing as IPAs and Ales only
+beerbrewAles <- beerbrew %>% filter(grepl("IPA", Style) | grepl("Ale", Style))
+beerbrewAles$Style[grepl("IPA", beerbrewAles$Style)] <- "IPA"
+beerbrewAles$Style[grepl("Ale", beerbrewAles$Style)] <- "Ale"
+beerbrewAles$Style <- as.factor(beerbrewAles$Style)
+
+#create train and test
+index <- sample(seq(1,1534,1), 1534 * .7)
+beerTrain <- beerbrewAles[index,]
+beerTest <- beerbrewAles[-index,]
+
+#classification
+classification <- knn(train = beerTrain[,c("IBU", "ABV")], test = beerTest[,c("IBU", "ABV")], beerTrain$Style, prob = TRUE, k = 5)
+confusionMatrix(table(classification, beerTest$Style))
+
+#k optimization, k = 5
+set.seed(1)
+iterations = 10
+numks = 20
+splitPerc = .7
+
+masterAcc = matrix(nrow = iterations, ncol = numks)
+
+for(j in 1:iterations)
+{
+  trainIndices = sample(1:dim(beerbrewAles)[1],round(splitPerc * dim(beerbrewAles)[1]))
+  train = beerbrewAles[trainIndices,]
+  test = beerbrewAles[-trainIndices,]
+  for(i in 1:numks)
+  {
+    classifications = knn(train[,c("IBU", "ABV")], test[,c("IBU", "ABV")], train$Style, prob = TRUE, k = i)
+    table(classifications,test$Style)
+    CM = confusionMatrix(table(classifications,test$Style))
+    masterAcc[j,i] = CM$overall[1]
+  }
+  
+}
+
+MeanAcc = colMeans(masterAcc)
+
+plot(seq(1,numks,1),MeanAcc, type = "l")
+which.max(MeanAcc)
+max(MeanAcc)
+```
+
+9. For this point we wanted to look at the most popular styles in the U.S. and see which states those were coming from. The most popular style in the US is the American IPA and California is the top producer of this style.
+```{r, fig.dim = c(10,10)}
+#Top 5 styles
+style_counts <- data.frame(table(beerbrew$Style))
+head(style_counts %>% arrange(-Freq),5)
+
+#Top styles in each state
+beerbrew %>% 
+  filter(Style == "American IPA" | Style == "American Pale Ale (APA)" | Style == "American Amber / Red Ale" | Style == "American Blonde Ale" | Style == "American Double / Imperial IPA") %>% 
+  count(State, Style) %>% 
+  arrange(-n, State) %>% 
+  group_by(State) %>% 
+  top_n(1,n) %>% 
+  ggplot(aes(reorder(State, -n), n, fill = Style)) + 
+  geom_col() + 
+  xlab("State")+
+  ylab("Count") +
+  scale_fill_brewer(palette = "Paired") + 
+  coord_flip()+ 
+  theme(legend.position = "bottom")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
